@@ -1,0 +1,14 @@
+*.seed
+*.log
+*.csv
+*.dat
+*.out
+*.pid
+*.gz
+*.DS_Store
+.idea
+.ssh
+node_modules
+nbproject
+npm-debug.log
+
