@@ -66,7 +66,7 @@ io.sockets.on('connection', function(socket) {
     /* Not so fast. If a client disconnects we don't want their respective dtrace consumer to
        keep collecting data any more. We also don't want to try to keep sending anything to them
        period. So clean up. */
-    socket.on('disconnect', function(){
+    socket.on('disconnect', function() {
         clearInterval(clearInterval(interval_id_by_session_id[socket.sessionId]));
         var dtp = dtp_by_session_id[socket.sessionId];
         if (dtp) {
@@ -83,9 +83,9 @@ app.get('/healthcheck', function(req, res, next) {
 
 app.get('/process-list', function (req, res, next) {
 
-    exec('ps', function(error, stdout, stderr) {
-        if (error) {
-            res.send(500, error);
+    exec('ps -e', function(error, stdout, stderr) {
+        if (stderr || error) {
+            res.send(500, stderr ? stderr.toString() : error);
             return;
         }
         var lines = stdout.toString().trim().split('\n');
