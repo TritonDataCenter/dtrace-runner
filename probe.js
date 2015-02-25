@@ -83,7 +83,7 @@ app.get('/healthcheck', function(req, res, next) {
 
 app.get('/process-list', function (req, res, next) {
 
-    exec('ps -e', function(error, stdout, stderr) {
+    exec('ps -ef', function(error, stdout, stderr) {
         if (stderr || error) {
             res.send(500, stderr ? stderr.toString() : error);
             return;
@@ -92,7 +92,8 @@ app.get('/process-list', function (req, res, next) {
         var results = [];
         for (var i = 1; i < lines.length; i++) {
             var parts = lines[i].trim().replace(/\s{2,}/g, ' ');
-            results.push({pid: parts.slice(0, parts.indexOf(' ')), cmd: parts.replace(/([^\s]*\s){3}/, '')})
+            var positionPid = parts.indexOf(' ') + 1;
+            results.push({pid: parts.slice(positionPid, parts.indexOf(' ', positionPid)), cmd: parts.replace(/([^\s]*\s){3}/, '')});
         }
         res.send(results);
     });
