@@ -1,9 +1,9 @@
 var libdtrace = require('libdtrace');
 
-process.on('message', function(data) {
+process.on('message', function (data) {
     var type = data.type;
-    if (type === 'heatmapScript') {
-        var message = data.message;
+    var message = data.message;
+    if (type === 'heatmap') {
         var dtp = new libdtrace.Consumer();
         dtp.strcompile(message);
         dtp.go();
@@ -18,7 +18,7 @@ process.on('message', function(data) {
                     }
                 });
                 process.send(JSON.stringify(aggdata));
-            } catch( err ) {
+            } catch(err) {
                 console.log('dtp aggwalk error: ', err);
             }
         }, 1101);
