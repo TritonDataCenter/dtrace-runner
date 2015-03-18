@@ -11,8 +11,6 @@ var app = express()
   , WebSocketServer = require('ws').Server
   , wss = new WebSocketServer({server: server});
 
-var thisId = 0;
-
 app.use(express.static(path.join(__dirname, 'public')));
 
 /* Now that we have a web socket server, we need to create a handler for connection events. These
@@ -27,10 +25,10 @@ wss.on('connection', function(ws) {
     ws.on('message', function(message) {
         message = JSON.parse(message);
         if (message.type === 'flamegraph') {
-            thisId++;
+            message.id = Math.round(Math.random() * 1000000);
             var dtraceScript = message.message;
             var deleteDtraceOut = function () {
-                return fs.unlink(__dirname + '/dtrace' + thisId + '.out', function (err) {
+                return fs.unlink(__dirname + '/dtrace' + message.id + '.out', function (err) {
                     if (err) {
                         console.log(err);
                     };
@@ -46,12 +44,12 @@ wss.on('connection', function(ws) {
                 return;
             };
             
-            exec('dtrace ' + dtraceScript + ' > dtrace' + thisId + '.out',
+            exec('dtrace ' + dtraceScript + ' > dtrace' + message.id + '.out',
                 function (error, stdout, stderr) {
                     if (error) {
                       return errorCallback(error);
                     }
-                    exec(__dirname + '/node_modules/stackvis/cmd/stackvis dtrace flamegraph-svg < dtrace' + thisId + '.out',
+                    exec(__dirname + '/node_modules/stackvis/cmd/stackvis dtrace flamegraph-svg < dtrace' + message.id + '.out',
                         function (error, stdout, stderr) {
                             if (error) {
                                 return errorCallback(error);
