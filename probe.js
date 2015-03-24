@@ -18,6 +18,20 @@ app.use(express.static(path.join(__dirname, 'public')));
 wss.on('connection', function(ws) {
     var consumer;
 
+    ws.pingssent = 0;
+    var ping = setInterval(function() {
+        if (ws.pingssent >= 2) {
+            ws.close();
+        } else {
+            ws.ping();
+            ws.pingssent++;
+        }
+    }, 20 * 1000);
+
+    ws.on("pong", function() {
+        ws.pingssent = 0;
+    });
+
     /* Like the web server object, we must also define handlers for various socket events that
      will happen during the lifetime of the connection. These will define how we interact with
      the client. The first is a message event which occurs when the client sends something to
@@ -85,6 +99,9 @@ wss.on('connection', function(ws) {
                 console.log('dtrace process exit with code %s and signal %s', code, signal);
             });
             consumer.kill();
+        }
+        if (ping) {
+            clearInterval(ping);
         }
         console.log('disconnected');
     });
