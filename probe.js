@@ -4,6 +4,10 @@ var path = require('path');
 var childProcess = require('child_process');
 var exec = childProcess.exec;
 var fs = require('fs');
+var manta = require('manta');
+var MemoryStream = require('memorystream');
+var async = require('async');
+
 /* create our express & http server and prepare to serve javascript files in ./public
  */
 var app = express()
@@ -76,6 +80,88 @@ wss.on('connection', function(ws) {
                             }
                         });
                     });
+        } else if (message.type === 'coreDump') {
+            var pid = message.message;
+            var sendError = function (error) {
+                try {
+                    ws.send('Error: ' + error.toString());
+                } catch (err) {
+                    console.log(err);
+                }
+            }
+
+            exec('gcore ' + pid, function (err, stdout, stderr) {
+                if (err) {
+                    return sendError(err);
+                }
+
+                exec("ssh-keygen -lf /root/.ssh/user_id_rsa.pub | awk '{print $2}'", function (error, key, stderr) {
+
+                    var mantaConf = {};
+
+                    var mapMdataKeys = {
+                        MANTA_USER: 'manta-account',
+                        MANTA_URL: 'manta-url',
+                        MANTA_SUBUSER: 'manta-subuser'
+                    };
+
+                    function getMetadata(key, callback) {
+                        exec('/usr/sbin/mdata-get ' + key, callback);
+                    }
+
+                    mantaConf.MANTA_KEY_ID = key.replace('\n', '');
+
+                    var funcs = [];                    
+                    Object.keys(mapMdataKeys).forEach(function (key) {
+                        funcs.push(function (callback) {
+                            getMetadata(mapMdataKeys[key], function (error, mdata) {
+                                mantaConf[key] = mdata.replace('\n', '');
+                                callback(error);
+                            });
+                        });
+                    });
+
+                    async.parallel(funcs, function (err) {
+                        if (err) {
+                            return sendError(err);
+                        }
+                        var mantaClient = manta.createClient({
+                            sign: manta.privateKeySigner({
+                                key: fs.readFileSync('/root/.ssh/user_id_rsa', 'utf8'),
+                                keyId: mantaConf.MANTA_KEY_ID,
+                                user: mantaConf.MANTA_USER,
+                                subuser: mantaConf.MANTA_SUBUSER
+                            }),
+                            user: mantaConf.MANTA_USER,
+                            subuser: mantaConf.MANTA_SUBUSER,
+                            url: mantaConf.MANTA_URL
+                        });
+
+                        var filePath = '~~/stor/.joyent/dtrace/coreDump/core.' + pid;
+
+                        var putFileInManta = fs.createReadStream(__dirname + '/core.' + pid)
+                            .pipe(mantaClient.createWriteStream(filePath));
+
+                        putFileInManta.on('end', function() {
+                            exec("pgrep 'node'", function (err, stdout, stderr) {
+                                if (err) {
+                                    return sendError(err);
+                                }
+
+                                var nodePidList = stdout.split('\n');
+                                var nodePid = nodePidList.filter(function (nodePid) {
+                                    return nodePid === pid;
+                                });
+
+                                var result = {path: filePath};
+                                result.node = nodePid.length > 0;
+
+                                ws.send(JSON.stringify(result));
+                            });
+                        });
+                    });
+                });
+            });
         } else {
             consumer = childProcess.fork('dtrace-consumer.js');
             consumer.send({type: message.type, message: message.message});
