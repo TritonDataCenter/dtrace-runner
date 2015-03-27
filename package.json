@@ -7,7 +7,8 @@
     "libdtrace": "0.0.3",
     "ws": "0.7.1",
     "stackvis": "0.2.0",
-    "vasync": "1.6.3"
+    "vasync": "1.6.3",
+    "manta": "1.4.3"
   },
   "devDependencies": {
   },
