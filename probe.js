@@ -1,34 +1,41 @@
-var http = require('http');
+'use strict';
 var express = require('express');
 var path = require('path');
 var childProcess = require('child_process');
 var exec = childProcess.exec;
 var fs = require('fs');
 var vasync = require('vasync');
-
-/* create our express & http server and prepare to serve javascript files in ./public
- */
 var app = express();
-var server = http.createServer(app);
+
+var httpsServer = require('https').createServer({
+    ca: fs.readFileSync('./ca.pem'),
+    cert: fs.readFileSync('./server-cert.pem'),
+    key: fs.readFileSync('./server-key.pem'),
+    rejectUnauthorized: false,
+    requestCert: true
+}, function (req, res) {
+    if (!req.client.authorized) {
+        res.statusCode = 401;
+        res.end();
+    } else {
+        app.apply(this, arguments);
+    }
+});
+
 var WebSocket = require('ws');
+var wss = new WebSocket.Server({noServer: true});
 
-server.setMaxListeners(0);
-
-app.use(express.static(path.join(__dirname, 'public')));
-
-var wsCache = {};
-var processCache = {};
+var cache = {};
 
 var PROCESS_KILLED_MESSAGE = 'process has been killed';
 
 /* Now that we have a web socket server, we need to create a handler for connection events. These
  events represet a client connecting to our server */
-function createWebSocketServer(uuid, callback) {
-    var path = '/' + uuid;
-    var wss = new WebSocket.Server({server: server, path: path, autoAcceptConnections: false});
 
-    wss.on('connection', function (socket) {
-        wsCache[uuid] = socket;
+function handleWSConnection(connection) {
+    return function (socket) {
+        connection.socket = socket;
+        var uuid = connection.uuid;
         var consumer;
         socket.pingssent = 0;
         var ping = setInterval(function () {
@@ -40,7 +47,7 @@ function createWebSocketServer(uuid, callback) {
             }
         }, 20 * 1000);
 
-        socket.on("pong", function () {
+        socket.on('pong', function () {
             socket.pingssent = 0;
         });
 
@@ -61,51 +68,47 @@ function createWebSocketServer(uuid, callback) {
                     return fs.unlink(__dirname + '/dtrace' + id + '.out', function (err) {
                         if (err) {
                             console.log(err);
-                        };
+                        }
                     });
                 };
 
                 vasync.waterfall([
                     function (callback) {
-                        processCache[uuid] = exec('dtrace ' + dtraceScript + ' > dtrace' + uuid + '.out', function (error, stdout, stderr) {
-                            if (process.killed) {
+                        connection.process = exec('dtrace ' + dtraceScript + ' > dtrace' + uuid + '.out', function (error) {
+                            if (connection.process && connection.process.killed) {
                                 error = new Error(PROCESS_KILLED_MESSAGE);
                             }
                             callback(error);
                         });
                     },
                     function (callback) {
-                        processCache[uuid] = exec(__dirname + '/node_modules/stackvis/cmd/stackvis dtrace flamegraph-svg < dtrace' + uuid + '.out',
-                            function (error, stdout, stderr) {
+                        connection.process = exec(__dirname + '/node_modules/stackvis/cmd/stackvis dtrace flamegraph-svg < dtrace' + uuid + '.out',
+                            function (error, stdout) {
                                 var svg;
                                 if (!error) {
-                                    if (process.killed) {
+                                    if (connection.process && connection.process.killed) {
                                         error = new Error(PROCESS_KILLED_MESSAGE);
                                     } else {
-                                        try {
-                                            svg = JSON.stringify(stdout);
-                                        } catch (ex) {
-                                            error = ex;
-                                        }
+                                        svg = JSON.stringify(stdout);
                                     }
                                 }
                                 callback(error, uuid, svg);
                             });
                     }
-                ], function (err, id, svg) {
+                ], function (err, uuid, svg) {
                     if (err) {
-                        return send(id, err.toString());
+                        return send(uuid, err.toString());
                     } else {
-                        send(id, svg);
+                        send(uuid, svg);
                     }
-                    deleteDtraceOut(id);
+                    deleteDtraceOut(uuid);
                 });
             } else {
                 consumer = childProcess.fork('dtrace-consumer.js');
                 consumer.send({type: message.type, message: message.message});
                 consumer.on('message', function (msg) {
                     send(uuid, msg);
-              });
+                });
             }
         });
         /* Not so fast. If a client disconnects we don't want their respective dtrace consumer to
@@ -125,63 +128,60 @@ function createWebSocketServer(uuid, callback) {
             close(uuid);
             console.log('disconnected');
         });
-    });
-    callback(null, path);
+
+    }
 }
 
 function killProcess(uuid) {
-    var process = processCache[uuid];
-    if (process) {
-        process.kill();
-        delete processCache[uuid];
+    var connection = cache[uuid];
+    if (connection && connection.process) {
+        connection.process.kill();
+        delete connection.process;
     }
 }
 
 function send(uuid, data) {
-    var socket = wsCache[uuid];
+    var connection = cache[uuid];
+    if (!connection) {
+        return;
+    }
+
+    var socket = connection.socket;
     if (socket && socket.readyState === WebSocket.OPEN) {
         socket.send(data);
     } else {
         console.log('Error: no websocket');
+        close(uuid);
     }
-    killProcess(uuid);
 }
 
 function close(uuid) {
-    if (wsCache[uuid]) {
-        wsCache[uuid].close();
-        delete wsCache[uuid];
+    var connection = cache[uuid];
+    if (connection && connection.socket) {
+        connection.socket.close();
     }
+
     killProcess(uuid);
+    delete cache[uuid];
 }
 
-app.get('/setup/:uuid', function (req, res, next) {
+app.get('/setup/:uuid', function (req, res) {
     var uuid = req.params.uuid;
-    if (uuid) {
-        createWebSocketServer(uuid, function (err, path) {
-            res.send(path);
-        });
-    } else {
-        res.status(404).end();
-    }
+    cache[uuid] = {uuid: uuid};
+    res.send('/' + uuid);
 });
 
-app.get('/close/:uuid', function (req, res, next) {
+app.get('/close/:uuid', function (req, res) {
     var uuid = req.params.uuid;
-    if (uuid) {
-        close(uuid);
-        res.send('close');
-    } else {
-        res.status(404).end();
-    }
+    close(uuid);
+    res.send('close');
 });
 
-app.get('/healthcheck', function (req, res, next) {
+app.get('/healthcheck', function (req, res) {
     res.send('ok');
 });
 
-app.get('/process-list', function (req, res, next) {
-
+app.get('/process-list', function (req, res) {
     exec('ps -ef', function(error, stdout, stderr) {
         if (stderr || error) {
             res.send(500, stderr ? stderr.toString() : error);
@@ -192,11 +192,38 @@ app.get('/process-list', function (req, res, next) {
         for (var i = 1; i < lines.length; i++) {
             var parts = lines[i].trim().replace(/\s{2,}/g, ' ');
             var positionPid = parts.indexOf(' ') + 1;
-            results.push({pid: parts.slice(positionPid, parts.indexOf(' ', positionPid)), cmd: parts.replace(/([^\s]*\s){3}/, '')});
+            results.push({
+                pid: parts.slice(positionPid, parts.indexOf(' ', positionPid)),
+                cmd: parts.replace(/([^\s]*\s){3}/, '')
+            });
         }
         res.send(results);
     });
 });
 
+function sendError(socket, code, message) {
+    var response = [
+        'HTTP/1.1 ' + code + ' ' + message,
+        'Content-type: text/html',
+        '', ''
+    ];
+    socket.write(response.join('\r\n'));
 
-server.listen(8000);
+}
+
+httpsServer.on('upgrade', function (req, socket, upgradeHead) {
+    var uuid = req.url.split('/')[1];
+    var connection = cache[uuid];
+    if (!req.connection.authorized) {
+        sendError(socket, 401, 'Unauthorized');
+        return;
+    }
+    if (!connection) {
+        sendError(socket, 404, 'Not Found');
+        return;
+    }
+    connection.socket = socket;
+    wss.handleUpgrade(req, socket, upgradeHead, handleWSConnection(connection));
+});
+
+httpsServer.listen(8000);
