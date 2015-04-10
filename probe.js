@@ -101,12 +101,14 @@ function handleWSConnection(connection) {
                     } else {
                         send(uuid, svg);
                     }
+                    killProcess(uuid);
                     deleteDtraceOut(uuid);
                 });
+                send(uuid, 'started');
             } else {
-                consumer = childProcess.fork('dtrace-consumer.js');
-                consumer.send({type: message.type, message: message.message});
-                consumer.on('message', function (msg) {
+                connection.process = childProcess.fork('dtrace-consumer.js');
+                connection.process.send({type: message.type, message: message.message});
+                connection.process.on('message', function (msg) {
                     send(uuid, msg);
                 });
             }
@@ -115,13 +117,6 @@ function handleWSConnection(connection) {
          keep collecting data any more. We also don't want to try to keep sending anything to them
          period. So clean up. */
         socket.on('close', function () {
-            if (consumer) {
-                consumer.disconnect();
-                consumer.on('exit', function (code, signal) {
-                    console.log('dtrace process exited with code %s and signal %s', code, signal);
-                });
-                consumer.kill();
-            }
             if (ping) {
                 clearInterval(ping);
             }
@@ -135,6 +130,9 @@ function handleWSConnection(connection) {
 function killProcess(uuid) {
     var connection = cache[uuid];
     if (connection && connection.process) {
+        connection.process.on('exit', function (code, signal) {
+            console.log('dtrace process exited with code %s and signal %s', code, signal);
+        });
         connection.process.kill();
         delete connection.process;
     }
