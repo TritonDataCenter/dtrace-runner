@@ -1,11 +1,10 @@
 'use strict';
-var express = require('express');
 var path = require('path');
 var childProcess = require('child_process');
 var exec = childProcess.exec;
 var fs = require('fs');
 var vasync = require('vasync');
-var app = express();
+var url = require('url');
 
 var httpsServer = require('https').createServer({
     ca: fs.readFileSync('./ca.pem'),
@@ -13,13 +12,6 @@ var httpsServer = require('https').createServer({
     key: fs.readFileSync('./server-key.pem'),
     rejectUnauthorized: false,
     requestCert: true
-}, function (req, res) {
-    if (!req.client.authorized) {
-        res.statusCode = 401;
-        res.end();
-    } else {
-        app.apply(this, arguments);
-    }
 });
 
 var WebSocket = require('ws');
@@ -123,7 +115,6 @@ function handleWSConnection(connection) {
             close(uuid);
             console.log('disconnected');
         });
-
     }
 }
 
@@ -163,45 +154,6 @@ function close(uuid) {
     delete cache[uuid];
 }
 
-app.get('/setup/:uuid', function (req, res) {
-    var uuid = req.params.uuid;
-    cache[uuid] = {uuid: uuid};
-    res.send('/' + uuid);
-});
-
-app.get('/close/:uuid', function (req, res) {
-    var uuid = req.params.uuid;
-    close(uuid);
-    res.send('close');
-});
-
-app.get('/healthcheck', function (req, res) {
-    res.send('ok');
-});
-
-app.get('/process-list', function (req, res) {
-    exec('ps -ef -o pid,args', function(error, stdout, stderr) {
-        if (stderr || error) {
-            res.send(500, stderr ? stderr.toString() : error);
-            return;
-        }
-        var lines = stdout.toString().trim().split('\n');
-        var results = [];
-        for (var i = 1; i < lines.length; i++) {
-            var parts = lines[i].trim().replace(/\s{2,}/g, ' ');
-            var positionPid = parts.indexOf(' ');
-            var cmd = parts.slice(positionPid + 1);
-            var execname = cmd.replace('sudo ', '').split(' ')[0];
-            results.push({
-                pid: parts.slice(0, positionPid),
-                cmd: cmd,
-                execname: execname.slice(execname.lastIndexOf('/') + 1)
-            });
-        }
-        res.send(results);
-    });
-});
-
 function sendError(socket, code, message) {
     var response = [
         'HTTP/1.1 ' + code + ' ' + message,
@@ -220,11 +172,52 @@ httpsServer.on('upgrade', function (req, socket, upgradeHead) {
         return;
     }
     if (!connection) {
-        sendError(socket, 404, 'Not Found');
-        return;
+        if (!uuid) {
+            return sendError(socket, 404, 'Not Found');
+        } else {
+            connection = cache[uuid] = {uuid: uuid};
+        }
     }
     connection.socket = socket;
     wss.handleUpgrade(req, socket, upgradeHead, handleWSConnection(connection));
+});
+
+httpsServer.on('request', function (req, res) {
+    var pathname = url.parse(req.url).pathname;
+
+    if (!req.client.authorized) {
+        res.statusCode = 401;
+        return res.end();
+    } else if (pathname === '/healthcheck') {
+        res.writeHead(200, {'Content-Type': 'text/plain'});
+        return res.end('ok');
+    } else if (pathname === '/process-list') {
+        exec('ps -ef -o pid,args', function (error, stdout, stderr) {
+            if (stderr || error) {
+                res.statusCode = 500;
+                return res.end(stderr ? stderr.toString() : error);
+            }
+            var lines = stdout.toString().trim().split('\n');
+            var results = [];
+            for (var i = 1; i < lines.length; i++) {
+                var parts = lines[i].trim().replace(/\s{2,}/g, ' ');
+                var positionPid = parts.indexOf(' ');
+                var cmd = parts.slice(positionPid + 1);
+                var execname = cmd.replace('sudo ', '').split(' ')[0];
+                results.push({
+                    pid: parts.slice(0, positionPid),
+                    cmd: cmd,
+                    execname: execname.slice(execname.lastIndexOf('/') + 1)
+                });
+            }
+            res.writeHead(200, {'Content-Type': 'application/json'}); 
+            res.write(JSON.stringify(results));
+            res.end();
+        });
+    } else {
+        res.writeHead(404)
+        res.end();
+    }
 });
 
 httpsServer.listen(8000);
