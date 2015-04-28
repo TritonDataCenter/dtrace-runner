@@ -5,6 +5,7 @@ var exec = childProcess.exec;
 var fs = require('fs');
 var vasync = require('vasync');
 var url = require('url');
+var manta = require('manta');
 
 var httpsServer = require('https').createServer({
     ca: fs.readFileSync('./ca.pem'),
@@ -20,6 +21,14 @@ var wss = new WebSocket.Server({noServer: true});
 var cache = {};
 
 var PROCESS_KILLED_MESSAGE = 'process has been killed';
+
+function deleteFile(filePath) {
+    return fs.unlink(filePath, function (err) {
+        if (err) {
+            console.log(err);
+        }
+    });
+}
 
 /* Now that we have a web socket server, we need to create a handler for connection events. These
  events represet a client connecting to our server */
@@ -57,11 +66,7 @@ function handleWSConnection(connection) {
             if (message.type === 'flamegraph') {
                 var dtraceScript = message.message;
                 var deleteDtraceOut = function (id) {
-                    return fs.unlink(__dirname + '/dtrace' + id + '.out', function (err) {
-                        if (err) {
-                            console.log(err);
-                        }
-                    });
+                    return deleteFile(__dirname + '/dtrace' + id + '.out');
                 };
 
                 vasync.waterfall([
@@ -97,6 +102,70 @@ function handleWSConnection(connection) {
                     deleteDtraceOut(uuid);
                 });
                 send(uuid, 'started');
+            } else if (message.type === 'coreDump') {
+                var pid = message.message;
+
+                vasync.waterfall([
+                    function (callback) {
+                        connection.process = exec('gcore ' + pid, function (err, stdout) {
+                            callback(err);
+                        });
+                        send(uuid, 'started');
+                    },
+                    function (callback) {
+                         connection.process = exec("ssh-keygen -lf /root/.ssh/user_id_rsa.pub | awk '{print $2}'", function (err, key) {
+                            if (err) {
+                                return callback(err);
+                            }
+
+                            var mantaOptions = {
+                                user: process.env.MANTA_USER,
+                                url: process.env.MANTA_URL,
+                                subuser: process.env.MANTA_SUBUSER
+                            };
+                            mantaOptions.sign = manta.privateKeySigner({
+                                key: fs.readFileSync('/root/.ssh/user_id_rsa', 'utf8'),
+                                keyId: key.replace('\n', ''),
+                                user: mantaOptions.user,
+                                subuser: mantaOptions.subuser
+                            });
+                            
+                            var mantaClient = manta.createClient(mantaOptions);
+                            
+                            var filePath = '~~/stor/.joyent/devtools/coreDump/core.' + pid;
+
+                            var putFileInManta = fs.createReadStream(__dirname + '/core.' + pid)
+                                .pipe(mantaClient.createWriteStream(filePath));
+
+                            putFileInManta.on('end', function() {
+                                deleteFile(__dirname + '/core.' + pid);
+                                callback(null, filePath)
+                            });
+                        });
+                    },
+                    function (filePath, callback) {
+                        connection.process = exec("pgrep 'node'", function (err, stdout) {
+                            if (err) {
+                                return callback(err);
+                            }
+
+                            var nodePidList = stdout.split('\n');
+                            var nodePid = nodePidList.filter(function (nodePid) {
+                                return nodePid === pid;
+                            });
+
+                            var result = {path: filePath};
+                            result.node = nodePid.length > 0;
+                            callback(null, result);
+                        });
+                    }
+                ], function (err, result) {
+                    if (err) {
+                        result = {error: err.toString()};
+                    }
+                    send(uuid, JSON.stringify(result));
+                    killProcess(uuid);
+                });
             } else {
                 connection.process = childProcess.fork('dtrace-consumer.js');
                 connection.process.send({type: message.type, message: message.message});
