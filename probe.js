@@ -107,9 +107,7 @@ function handleWSConnection(connection) {
 
                 vasync.waterfall([
                     function (callback) {
-                        connection.process = exec('gcore ' + pid, function (err, stdout) {
-                            callback(err);
-                        });
+                        connection.process = exec('gcore ' + pid, callback);
                         send(uuid, 'started');
                     },
                     function (callback) {
@@ -119,9 +117,9 @@ function handleWSConnection(connection) {
                             }
 
                             var mantaOptions = {
-                                user: process.env.MANTA_USER,
-                                url: process.env.MANTA_URL,
-                                subuser: process.env.MANTA_SUBUSER
+                                user: process.env['MANTA_USER'],
+                                url: process.env['MANTA_URL'],
+                                subuser: process.env['MANTA_SUBUSER']
                             };
                             mantaOptions.sign = manta.privateKeySigner({
                                 key: fs.readFileSync('/root/.ssh/user_id_rsa', 'utf8'),
@@ -284,7 +282,7 @@ httpsServer.on('request', function (req, res) {
             res.end();
         });
     } else {
-        res.writeHead(404)
+        res.writeHead(404);
         res.end();
     }
 });
