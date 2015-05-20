@@ -110,8 +110,11 @@ function handleWSConnection(connection) {
                         connection.process = exec('gcore ' + pid, callback);
                         send(uuid, 'started');
                     },
-                    function (callback) {
-                         connection.process = exec("ssh-keygen -lf /root/.ssh/user_id_rsa.pub | awk '{print $2}'", function (err, key) {
+                    function (stdout, stderr, callback) {
+                        if (stderr) {
+                            return callback(stderr);
+                        }
+                        connection.process = exec("ssh-keygen -lf /root/.ssh/user_id_rsa.pub | awk '{print $2}'", function (err, key) {
                             if (err) {
                                 return callback(err);
                             }
