@@ -21,6 +21,7 @@ var wss = new WebSocket.Server({noServer: true});
 var cache = {};
 
 var PROCESS_KILLED_MESSAGE = 'process has been killed';
+var DTRACE_ERROR = 'DTrace error: ';
 
 function deleteFile(filePath) {
     return fs.unlink(filePath, function (err) {
@@ -75,11 +76,12 @@ function handleWSConnection(connection) {
                             if (connection.process && connection.process.killed) {
                                 error = new Error(PROCESS_KILLED_MESSAGE);
                             }
-                            callback(error);
+                            callback(error, uuid);
                         });
                     },
-                    function (callback) {
+                    function (uuid, callback) {
                         connection.process = exec(__dirname + '/node_modules/stackvis/cmd/stackvis dtrace flamegraph-svg < dtrace' + uuid + '.out',
+                            {maxBuffer: 1024 * 2000},
                             function (error, stdout) {
                                 var svg;
                                 if (!error) {
@@ -94,7 +96,7 @@ function handleWSConnection(connection) {
                     }
                 ], function (err, uuid, svg) {
                     if (err) {
-                        return send(uuid, err.toString());
+                        return send(uuid, JSON.stringify({error: DTRACE_ERROR + err.toString()}));
                     } else {
                         send(uuid, svg);
                     }
