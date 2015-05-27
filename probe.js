@@ -69,6 +69,9 @@ function handleWSConnection(connection) {
                 var deleteDtraceOut = function (id) {
                     return deleteFile(__dirname + '/dtrace' + id + '.out');
                 };
+                var deleteDtraceSvg = function (id) {
+                    return deleteFile(__dirname + '/' + id + '.svg');
+                };
 
                 vasync.waterfall([
                     function (callback) {
@@ -80,25 +83,30 @@ function handleWSConnection(connection) {
                         });
                     },
                     function (uuid, callback) {
-                        connection.process = exec(__dirname + '/node_modules/stackvis/cmd/stackvis dtrace flamegraph-svg < dtrace' + uuid + '.out',
-                            {maxBuffer: 1024 * 2000},
-                            function (error, stdout) {
-                                var svg;
+                        connection.process = exec(__dirname + '/node_modules/stackvis/cmd/stackvis dtrace flamegraph-svg < dtrace' + uuid + '.out > ' + uuid + '.svg',
+                            function (error) {
+                                var filePath;
                                 if (!error) {
                                     if (connection.process && connection.process.killed) {
                                         error = new Error(PROCESS_KILLED_MESSAGE);
                                     } else {
-                                        svg = JSON.stringify(stdout);
+                                        filePath = uuid + '.svg';
                                     }
                                 }
-                                callback(error, uuid, svg);
+                                callback(error, uuid, filePath);
                             });
                     }
-                ], function (err, uuid, svg) {
+                ], function (err, uuid, filePath) {
                     if (err) {
-                        return send(uuid, JSON.stringify({error: DTRACE_ERROR + err.toString()}));
+                        send(uuid, JSON.stringify({error: DTRACE_ERROR + err.toString()}));
                     } else {
-                        send(uuid, svg);
+                        fs.readFile(__dirname + '/' + filePath, {encoding: 'UTF8'}, function (err, data) {
+                            if (err) {
+                                return send(uuid, JSON.stringify({error: DTRACE_ERROR + err.toString()}));
+                            }
+                            send(uuid, JSON.stringify(data));
+                            deleteDtraceSvg(uuid);
+                        });
                     }
                     killProcess(uuid);
                     deleteDtraceOut(uuid);
@@ -132,9 +140,9 @@ function handleWSConnection(connection) {
                                 user: mantaOptions.user,
                                 subuser: mantaOptions.subuser
                             });
-                            
+
                             var mantaClient = manta.createClient(mantaOptions);
-                            
+
                             var filePath = '~~/stor/.joyent/devtools/coreDump/core.' + pid;
 
                             var putFileInManta = fs.createReadStream(__dirname + '/core.' + pid)
@@ -282,7 +290,7 @@ httpsServer.on('request', function (req, res) {
                     execname: execname.slice(execname.lastIndexOf('/') + 1)
                 });
             }
-            res.writeHead(200, {'Content-Type': 'application/json'}); 
+            res.writeHead(200, {'Content-Type': 'application/json'});
             res.write(JSON.stringify(results));
             res.end();
         });
