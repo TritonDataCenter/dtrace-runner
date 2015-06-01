@@ -22,12 +22,61 @@ var cache = {};
 
 var PROCESS_KILLED_MESSAGE = 'process has been killed';
 var DTRACE_ERROR = 'DTrace error: ';
+var FLAMEGRAPH_PATH = '~~/stor/.joyent/devtools/flameGraph';
+var COREDUMP_PATH = '~~/stor/.joyent/devtools/coreDump';
+var DTRACE_DIRECTORY_ERROR = 'Check whether directory exists and has "dtrace" role tag: ';
 
 function deleteFile(filePath) {
     return fs.unlink(filePath, function (err) {
         if (err) {
             console.log(err);
         }
+    });
+}
+
+/**
+ * Writes a given file to the Manta storage
+ * @param inputPath Local file path
+ * @param outputPath Output file path in Manta
+ * @param callback Callback function
+ */
+function putFileToManta(inputPath, outputPath, callback) {
+    exec("ssh-keygen -lf /root/.ssh/user_id_rsa.pub | awk '{print $2}'", function (err, key) {
+        if (err) {
+            return callback(err);
+        }
+
+        var mantaOptions = {
+            user: process.env['MANTA_USER'],
+            url: process.env['MANTA_URL'],
+            subuser: process.env['MANTA_SUBUSER']
+        };
+        mantaOptions.sign = manta.privateKeySigner({
+            key: fs.readFileSync('/root/.ssh/user_id_rsa', 'utf8'),
+            keyId: key.replace('\n', ''),
+            user: mantaOptions.user,
+            subuser: mantaOptions.subuser
+        });
+
+        var mantaClient = manta.createClient(mantaOptions);
+        var putDirectory = outputPath.substring(0, outputPath.lastIndexOf('/'));
+
+        mantaClient.mkdir(putDirectory, function (err) {
+            if (err) {
+                return callback(new Error(DTRACE_DIRECTORY_ERROR + putDirectory));
+            }
+
+            try {
+                var putFileInManta = fs.createReadStream(inputPath)
+                    .pipe(mantaClient.createWriteStream(outputPath));
+
+                putFileInManta.on('end', function (err) {
+                    callback(null, outputPath)
+                });
+            } catch (ex) {
+                return callback(new Error(DTRACE_DIRECTORY_ERROR + putDirectory));
+            }
+        });
     });
 }
 
@@ -66,6 +115,7 @@ function handleWSConnection(connection) {
 
             if (message.type === 'flamegraph') {
                 var dtraceScript = message.message;
+                var hostId = message.hostId;
                 var deleteDtraceOut = function (id) {
                     return deleteFile(__dirname + '/dtrace' + id + '.out');
                 };
@@ -95,6 +145,11 @@ function handleWSConnection(connection) {
                                 }
                                 callback(error, uuid, filePath);
                             });
+                    },
+                    function (uuid, filePath, callback) {
+                        connection.process = putFileToManta(__dirname + '/' + filePath, FLAMEGRAPH_PATH + '/' + hostId + '/' + new Date().toISOString() + '.svg', function (err) {
+                            callback(err, uuid, filePath);
+                        });
                     }
                 ], function (err, uuid, filePath) {
                     if (err) {
@@ -124,34 +179,9 @@ function handleWSConnection(connection) {
                         if (stderr) {
                             return callback(stderr);
                         }
-                        connection.process = exec("ssh-keygen -lf /root/.ssh/user_id_rsa.pub | awk '{print $2}'", function (err, key) {
-                            if (err) {
-                                return callback(err);
-                            }
-
-                            var mantaOptions = {
-                                user: process.env['MANTA_USER'],
-                                url: process.env['MANTA_URL'],
-                                subuser: process.env['MANTA_SUBUSER']
-                            };
-                            mantaOptions.sign = manta.privateKeySigner({
-                                key: fs.readFileSync('/root/.ssh/user_id_rsa', 'utf8'),
-                                keyId: key.replace('\n', ''),
-                                user: mantaOptions.user,
-                                subuser: mantaOptions.subuser
-                            });
-
-                            var mantaClient = manta.createClient(mantaOptions);
-
-                            var filePath = '~~/stor/.joyent/devtools/coreDump/core.' + pid;
-
-                            var putFileInManta = fs.createReadStream(__dirname + '/core.' + pid)
-                                .pipe(mantaClient.createWriteStream(filePath));
-
-                            putFileInManta.on('end', function() {
-                                deleteFile(__dirname + '/core.' + pid);
-                                callback(null, filePath)
-                            });
+                        connection.process = putFileToManta(__dirname + '/core.' + pid, COREDUMP_PATH + '/core.' + pid, function (err, filePath) {
+                            deleteFile(__dirname + '/core.' + pid);
+                            callback(err, filePath)
                         });
                     },
                     function (filePath, callback) {
