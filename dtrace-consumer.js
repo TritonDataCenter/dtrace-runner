@@ -8,8 +8,8 @@ process.on('message', function (data) {
         try {
             dtp.strcompile(message);
             dtp.go();
-        } catch (e) {
-            process.send(e.toString());
+        } catch (ex) {
+            process.send({error: ex.toString()}.toString());
             return;
         }
 
