@@ -26,7 +26,12 @@ var wss = new WebSocket.Server({noServer: true});
 var cache = {};
 var runningTasks = {};
 var taskConnections = {};
-var IS_DEBUG = process.env.LOG_LEVEL = 'debug';
+var LOG_LEVELS = {
+    error: 1,
+    info: 2,
+    debug: 3
+};
+var LOG_LEVEL = LOG_LEVELS[process.env.LOG_LEVEL] || LOG_LEVELS.info;
 var sshKey = '';
 var sshPrivateKey = '';
 var mantaOptions;
@@ -54,17 +59,15 @@ function loadMantaOptions() {
     });
 }
 
-function log(message) {
-    if (IS_DEBUG) {
+function log(message, level) {
+    if (message && LOG_LEVEL >= level) {
         console.log(message);
     }
 }
 
 function deleteFile(filePath) {
     return fs.unlink(filePath, function (err) {
-        if (err) {
-            log(err);
-        }
+        log(err, LOG_LEVELS.error);
     });
 }
 
@@ -142,16 +145,17 @@ function runTask(task) {
     var process;
     vasync.waterfall([
         function (callback) {
-            log('Running script');
+            log('Running script', LOG_LEVELS.debug);
             process = exec('dtrace ' + task.script + ' > ' + task.id + '.out', function (error) {
                 if (process && process.killed) {
                     error = new Error(PROCESS_KILLED_MESSAGE);
                 }
+                log(error, LOG_LEVELS.error);
                 callback(error);
             });
         },
         function (callback) {
-            log('generating SVG');
+            log('generating SVG', LOG_LEVELS.debug);
             process = exec(__dirname + '/node_modules/stackvis/cmd/stackvis dtrace flamegraph-svg < ' + task.id + '.out > ' + task.id + '.svg',
                 function (error) {
                     var filePath;
@@ -162,21 +166,21 @@ function runTask(task) {
                             filePath = task.id + '.svg';
                         }
                     }
+                    log(error, LOG_LEVELS.error);
                     callback(error, filePath);
                 });
         },
         function (filePath, callback) {
             if (!task.notSaveResults) {
-                log('putFileToManta');
+                log('Putting svg to manta', LOG_LEVELS.debug);
                 var mantaTaskFloder = FLAMEGRAPH_PATH + '/' + task.hostId + '/' + task.id + '/';
                 var mantaTaskPath = mantaTaskFloder + new Date().toISOString() + '.svg';
-                putFileToManta(__dirname + '/' + filePath, mantaTaskPath, function (err) {
+                putFileToManta(__dirname + '/' + filePath, mantaTaskPath, function (error) {
                     // Callback (as reponse to the piranha will wait for write info.json just the first time)
                     // Due next iterations info.json will be updated asynchronously
                     var isTaskJustStarted = task.doneCount === 0;
-                    log('isTaskJustStarted: ' + isTaskJustStarted);
-                    log(err);
-                    if (!err) {
+                    log(error, LOG_LEVELS.error);
+                    if (!error) {
                         var taskInfo = {
                             id: task.id,
                             totalCount: task.totalCount,
@@ -187,33 +191,33 @@ function runTask(task) {
                             probeTime: task.probeTime,
                             processName: task.processName
                         };
-                        log('File put to manta successfull: ' + mantaTaskPath);
-                        putFileContentsToManta(mantaTaskFloder + 'info.json', taskInfo, function (err2) {
-                            log('PutFileContents: callback:' + isTaskJustStarted);
+                        log('File put to manta successfull: ' + mantaTaskPath, LOG_LEVELS.debug);
+                        putFileContentsToManta(mantaTaskFloder + 'info.json', taskInfo, function (error2) {
+                            log(error2, LOG_LEVELS.error);
                             if (isTaskJustStarted) {
-                                callback(err || err2, mantaTaskPath);
+                                callback(error || error2, mantaTaskPath);
                             }
                         })
                     }
-                    log('End putFileToManta, callback: ' + !isTaskJustStarted);
-                    if (!isTaskJustStarted || err) {
-                        callback(err, mantaTaskPath);
+                    if (!isTaskJustStarted || error) {
+                        callback(error, mantaTaskPath);
                     }
                 });
             } else {
-                log('No saving .svg to the manta, sending it directly via websocket');
-                fs.readFile(__dirname + '/' + filePath, {encoding: 'UTF8'}, function (err, data) {
-                    if (err || !data) {
-                        return callback(err, filePath);
+                log('No saving .svg to the manta, sending it directly via websocket', LOG_LEVELS.debug);
+                fs.readFile(__dirname + '/' + filePath, {encoding: 'UTF8'}, function (error, data) {
+                    log(error, LOG_LEVELS.error);
+                    if (error || !data) {
+                        return callback(error, filePath);
                     }
                     sendFlameGraphProgress(task, {task: task, action: 'progress', svg: data});
-                    callback(err, filePath);
+                    callback(error, filePath);
                 });
             }
         }
     ], function (err, filePath) {
-        log('Done waterfall, file path:' + filePath);
-        log('Error: ' + err);
+        log('Done waterfall, file path:' + filePath, LOG_LEVELS.debug);
+        log(err, LOG_LEVELS.error);
         deleteTempFiles(task);
         if (process && process.kill) {
             process.kill();
@@ -247,7 +251,7 @@ function startFlameGraphTask(task, connection) {
     taskConnections[task.id] = connection;
     connection.taskId = task.id;
 
-    log('Starting task');
+    log('Starting task: ' + JSON.stringify(task), LOG_LEVELS.debug);
     sendFlameGraphProgress(task, {task: task, action: 'progress'});
     runTask(task);
 }
@@ -313,7 +317,7 @@ function handleWSConnection(connection) {
             }
 
             if (message.type === 'flamegraph') {
-                log('Incoming flamegraph message: ' + JSON.stringify(message));
+                log('Incoming flamegraph message: ' + JSON.stringify(message), LOG_LEVELS.debug);
                 if (message.action === 'start') {
                     var isoDate = new Date().toISOString();
                     var taskToStart = {
@@ -403,7 +407,7 @@ function handleWSConnection(connection) {
             }
             delete taskConnections[connection.taskId];
             close(uuid);
-            log('disconnected');
+            log('disconnected', LOG_LEVELS.debug);
         });
     }
 }
@@ -412,7 +416,7 @@ function killProcess(uuid) {
     var connection = cache[uuid];
     if (connection && connection.process) {
         connection.process.on('exit', function (code, signal) {
-            log('dtrace process exited with code %s and signal %s', code, signal);
+            log('dtrace process exited with code %s and signal %s', code, signal, LOG_LEVELS.debug);
         });
         connection.process.kill();
         delete connection.process;
@@ -429,7 +433,7 @@ function send(uuid, data) {
     if (socket && socket.readyState === WebSocket.OPEN) {
         socket.send(data);
     } else {
-        log('Error: no websocket');
+        log('Error: no websocket', LOG_LEVELS.error);
         close(uuid);
     }
 }
