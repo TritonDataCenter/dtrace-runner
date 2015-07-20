@@ -26,7 +26,7 @@ var wss = new WebSocket.Server({noServer: true});
 var cache = {};
 var runningTasks = {};
 var taskConnections = {};
-var IS_DEBUG = false;
+var IS_DEBUG = process.env.LOG_LEVEL = 'debug';
 var sshKey = '';
 var sshPrivateKey = '';
 var mantaOptions;
@@ -171,22 +171,34 @@ function runTask(task) {
                 var mantaTaskFloder = FLAMEGRAPH_PATH + '/' + task.hostId + '/' + task.id + '/';
                 var mantaTaskPath = mantaTaskFloder + new Date().toISOString() + '.svg';
                 putFileToManta(__dirname + '/' + filePath, mantaTaskPath, function (err) {
-                    if (!err && task.doneCount === 0) {
+                    // Callback (as reponse to the piranha will wait for write info.json just the first time)
+                    // Due next iterations info.json will be updated asynchronously
+                    var isTaskJustStarted = task.doneCount === 0;
+                    log('isTaskJustStarted: ' + isTaskJustStarted);
+                    log(err);
+                    if (!err) {
                         var taskInfo = {
                             id: task.id,
                             totalCount: task.totalCount,
+                            doneCount: task.doneCount,
                             startDate: task.startDate,
                             execname: task.execname,
                             pid: task.pid,
                             probeTime: task.probeTime,
                             processName: task.processName
                         };
-                        log(task.ProcessName);
-                        return putFileContentsToManta(mantaTaskFloder + 'info.json', taskInfo, function (err) {
-                            callback(err, mantaTaskPath);
+                        log('File put to manta successfull: ' + mantaTaskPath);
+                        putFileContentsToManta(mantaTaskFloder + 'info.json', taskInfo, function (err2) {
+                            log('PutFileContents: callback:' + isTaskJustStarted);
+                            if (isTaskJustStarted) {
+                                callback(err || err2, mantaTaskPath);
+                            }
                         })
                     }
-                    callback(err, mantaTaskPath);
+                    log('End putFileToManta, callback: ' + !isTaskJustStarted);
+                    if (!isTaskJustStarted || err) {
+                        callback(err, mantaTaskPath);
+                    }
                 });
             } else {
                 log('No saving .svg to the manta, sending it directly via websocket');
@@ -301,7 +313,7 @@ function handleWSConnection(connection) {
             }
 
             if (message.type === 'flamegraph') {
-                log('Incoming flamegraph message: ' + message);
+                log('Incoming flamegraph message: ' + JSON.stringify(message));
                 if (message.action === 'start') {
                     var isoDate = new Date().toISOString();
                     var taskToStart = {
